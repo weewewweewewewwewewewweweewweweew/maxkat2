@@ -37,6 +37,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         try {
             $ratings_stmt = $pdo->query("SELECT * FROM ratings");
             $plans_stmt = $pdo->query("SELECT * FROM plans");
+            $folders_stmt = $pdo->query("SELECT * FROM plan_folders ORDER BY order_index, name");
             $keys_stmt = $pdo->query("SELECT id, key_value as `key`, request_count as `count`, UNIX_TIMESTAMP(disabled_until) * 1000 as disabledUntil FROM kp_api_keys");
 
             $ratings_obj = [];
@@ -44,6 +45,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
 
             $plans_obj = [];
             foreach ($plans_stmt->fetchAll(PDO::FETCH_ASSOC) as $row) { $plans_obj[$row['id']] = $row; }
+
+            $folders_obj = [];
+            foreach ($folders_stmt->fetchAll(PDO::FETCH_ASSOC) as $row) { $folders_obj[$row['id']] = $row; }
 
             $keys_arr = [];
             foreach($keys_stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
@@ -54,6 +58,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
             echo json_encode([
                 'ratings' => $ratings_obj, 
                 'plans' => $plans_obj,
+                'plan_folders' => $folders_obj,
                 'kp_api_keys' => $keys_arr
             ]);
 
@@ -99,14 +104,59 @@ if ($is_post) {
 
             case 'save_plan':
                 $planData = $data['planData'];
-                $stmt = $pdo->prepare("INSERT INTO plans (id, movieData, proposedBy, priority, comment, season, episode, progress_percentage, episode_title, proposedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW()) ON DUPLICATE KEY UPDATE movieData=VALUES(movieData), proposedBy=VALUES(proposedBy), priority=VALUES(priority), comment=VALUES(comment), season=VALUES(season), episode=VALUES(episode), progress_percentage=VALUES(progress_percentage), episode_title=VALUES(episode_title)");
-                $stmt->execute([$filmId, json_encode($planData['movieData']), $planData['proposedBy'], $planData['priority'], $planData['comment'], $planData['season'] ?? null, $planData['episode'] ?? null, $planData['progress_percentage'] ?? null, $planData['episode_title'] ?? null]);
+                $stmt = $pdo->prepare("INSERT INTO plans (id, movieData, proposedBy, priority, comment, season, episode, progress_percentage, episode_title, folder_id, proposedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW()) ON DUPLICATE KEY UPDATE movieData=VALUES(movieData), proposedBy=VALUES(proposedBy), priority=VALUES(priority), comment=VALUES(comment), season=VALUES(season), episode=VALUES(episode), progress_percentage=VALUES(progress_percentage), episode_title=VALUES(episode_title), folder_id=VALUES(folder_id)");
+                $stmt->execute([$filmId, json_encode($planData['movieData']), $planData['proposedBy'], $planData['priority'], $planData['comment'], $planData['season'] ?? null, $planData['episode'] ?? null, $planData['progress_percentage'] ?? null, $planData['episode_title'] ?? null, $planData['folder_id'] ?? null]);
                 echo json_encode(['success' => true]);
                 break;
 
             case 'delete_plan':
                 $stmt = $pdo->prepare("DELETE FROM plans WHERE id = ?");
                 $stmt->execute([$filmId]);
+                echo json_encode(['success' => true]);
+                break;
+
+            case 'create_folder':
+                $folderName = $data['name'] ?? '';
+                if (empty($folderName)) throw new Exception("Folder name cannot be empty.");
+                $stmt = $pdo->prepare("INSERT INTO plan_folders (name) VALUES (?)");
+                $stmt->execute([$folderName]);
+                $newId = $pdo->lastInsertId();
+                echo json_encode(['success' => true, 'id' => $newId]);
+                break;
+
+            case 'update_folder':
+                $folderId = $data['folderId'] ?? 0;
+                $folderName = $data['name'] ?? '';
+                if (empty($folderName)) throw new Exception("Folder name cannot be empty.");
+                $stmt = $pdo->prepare("UPDATE plan_folders SET name = ? WHERE id = ?");
+                $stmt->execute([$folderName, $folderId]);
+                echo json_encode(['success' => true]);
+                break;
+
+            case 'delete_folder':
+                $folderId = $data['folderId'] ?? 0;
+                $moveToNoFolder = $data['moveToNoFolder'] ?? false;
+                
+                if ($moveToNoFolder) {
+                    // Перенести фильмы в общий список (folder_id = NULL)
+                    $stmt = $pdo->prepare("UPDATE plans SET folder_id = NULL WHERE folder_id = ?");
+                    $stmt->execute([$folderId]);
+                } else {
+                    // Удалить фильмы вместе с папкой
+                    $stmt = $pdo->prepare("DELETE FROM plans WHERE folder_id = ?");
+                    $stmt->execute([$folderId]);
+                }
+                
+                $stmt = $pdo->prepare("DELETE FROM plan_folders WHERE id = ?");
+                $stmt->execute([$folderId]);
+                echo json_encode(['success' => true]);
+                break;
+
+            case 'move_to_folder':
+                $planId = $data['planId'] ?? '';
+                $folderId = $data['folderId'] ?? null;
+                $stmt = $pdo->prepare("UPDATE plans SET folder_id = ? WHERE id = ?");
+                $stmt->execute([$folderId, $planId]);
                 echo json_encode(['success' => true]);
                 break;
             
